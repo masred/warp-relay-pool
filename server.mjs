@@ -27,12 +27,34 @@ process.on("uncaughtException", (err) => {
   console.error(`[relay] uncaughtException: ${err?.stack ?? String(err)}`);
 });
 
+const dispatchers = new Map();
+const egressIps = new Map();
+
+async function probeEgress(index) {
+  const dispatcher = dispatchers.get(index);
+  if (!dispatcher) return;
+  try {
+    const res = await fetch("https://cloudflare.com/cdn-cgi/trace", {
+      dispatcher,
+      signal: AbortSignal.timeout(5000),
+    });
+    const text = await res.text();
+    const match = text.match(/^ip=(.+)$/m);
+    if (match) {
+      egressIps.set(index, match[1].trim());
+    }
+  } catch (e) {
+    // leave existing or null
+  }
+}
+
 function createRelayInstance(index) {
   const port = BASE_PORT + index;
   const warpHost = process.env[`WARP_HOST_${index}`] || `warp-${index}`;
   const warpPort = process.env[`WARP_PORT_${index}`] || "1080";
   const proxyUrl = `socks5://${warpHost}:${warpPort}`;
   const dispatcher = new ProxyAgent({ uri: proxyUrl, keepAliveTimeout: 60_000, keepAliveMaxTimeout: 90_000, headersTimeout: 60_000, bodyTimeout: 0, connections: 32 });
+  dispatchers.set(index, dispatcher);
 
   const server = http.createServer(async (req, res) => {
     const target = req.headers[HEADER_TARGET]?.replace(/\/$/, "");
@@ -183,6 +205,7 @@ function createStatusServer() {
       tunnels.push({
         index: i,
         port: BASE_PORT + i,
+        egressIp: egressIps.get(i) || null,
         tunnelUrl: url,
         command: url ? `/freeflow add ${url} relay-${i}` : null,
       });
@@ -207,7 +230,7 @@ function createStatusServer() {
   });
 
   const knownUrls = new Map();
-  const pollTunnels = () => {
+  const pollTunnels = async () => {
     let updated = false;
     for (let i = 1; i <= COUNT; i++) {
       const url = getTunnelUrl(i);
@@ -216,11 +239,12 @@ function createStatusServer() {
         updated = true;
         console.log(`[relay] Tunnel #${i} ready: ${url} -> /freeflow add ${url} relay-${i}`);
       }
+      probeEgress(i);
     }
     if (updated) {
       console.log(`[relay] Active tunnels (${knownUrls.size}/${COUNT}):`);
       for (const [idx, u] of knownUrls.entries()) {
-        console.log(`  - Relay #${idx}: ${u}`);
+        console.log(`  - Relay #${idx} (${egressIps.get(idx) || "detecting IP"}): ${u}`);
       }
     }
   };

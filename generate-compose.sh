@@ -226,6 +226,7 @@ cat <<ENTRY
   tunnel-${i}:
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-${i}
+    user: "0:0"
     restart: always
     command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-${i}.log --url http://10.244.0.100:${PORT}
     volumes:

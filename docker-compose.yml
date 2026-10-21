@@ -142,6 +142,7 @@ services:
   tunnel-1:
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-1
+    user: "0:0"
     restart: always
     command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-1.log --url http://10.244.0.100:3001
     volumes:
@@ -150,6 +151,7 @@ services:
   tunnel-2:
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-2
+    user: "0:0"
     restart: always
     command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-2.log --url http://10.244.0.100:3002
     volumes:
@@ -158,6 +160,7 @@ services:
   tunnel-3:
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-3
+    user: "0:0"
     restart: always
     command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-3.log --url http://10.244.0.100:3003
     volumes:
@@ -166,6 +169,7 @@ services:
   tunnel-4:
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-4
+    user: "0:0"
     restart: always
     command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-4.log --url http://10.244.0.100:3004
     volumes:
@@ -174,6 +178,7 @@ services:
   tunnel-5:
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-5
+    user: "0:0"
     restart: always
     command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-5.log --url http://10.244.0.100:3005
     volumes:
