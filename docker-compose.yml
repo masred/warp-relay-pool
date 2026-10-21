@@ -144,7 +144,9 @@ services:
     container_name: warp-relay-tunnel-1
     user: "0:0"
     restart: always
-    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-1.log --url http://10.244.0.100:3001
+    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-1.log --url http://relay:3001
+    networks:
+      - default
     volumes:
       - tunnel-logs:/var/log/cloudflared
 
@@ -153,7 +155,9 @@ services:
     container_name: warp-relay-tunnel-2
     user: "0:0"
     restart: always
-    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-2.log --url http://10.244.0.100:3002
+    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-2.log --url http://relay:3002
+    networks:
+      - default
     volumes:
       - tunnel-logs:/var/log/cloudflared
 
@@ -162,7 +166,9 @@ services:
     container_name: warp-relay-tunnel-3
     user: "0:0"
     restart: always
-    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-3.log --url http://10.244.0.100:3003
+    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-3.log --url http://relay:3003
+    networks:
+      - default
     volumes:
       - tunnel-logs:/var/log/cloudflared
 
@@ -171,7 +177,9 @@ services:
     container_name: warp-relay-tunnel-4
     user: "0:0"
     restart: always
-    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-4.log --url http://10.244.0.100:3004
+    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-4.log --url http://relay:3004
+    networks:
+      - default
     volumes:
       - tunnel-logs:/var/log/cloudflared
 
@@ -180,7 +188,9 @@ services:
     container_name: warp-relay-tunnel-5
     user: "0:0"
     restart: always
-    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-5.log --url http://10.244.0.100:3005
+    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-5.log --url http://relay:3005
+    networks:
+      - default
     volumes:
       - tunnel-logs:/var/log/cloudflared
 

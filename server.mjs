@@ -199,6 +199,18 @@ function getTunnelUrl(index) {
 function createStatusServer() {
   const statusPort = BASE_PORT;
   const statusServer = http.createServer((req, res) => {
+    const urlObj = new URL(req.url, `http://localhost:${statusPort}`);
+    if (urlObj.pathname.startsWith("/log/")) {
+      const idx = urlObj.pathname.replace("/log/", "").trim();
+      const logPath = path.join(TUNNEL_LOG_DIR, `tunnel-${idx}.log`);
+      if (fs.existsSync(logPath)) {
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        return res.end(fs.readFileSync(logPath, "utf8"));
+      }
+      res.writeHead(404, { "content-type": "text/plain" });
+      return res.end(`No log for tunnel ${idx}`);
+    }
+
     const tunnels = [];
     for (let i = 1; i <= COUNT; i++) {
       const url = getTunnelUrl(i);
