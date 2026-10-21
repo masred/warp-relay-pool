@@ -1,10 +1,13 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { ProxyAgent } from "undici";
 
 const COUNT = parseInt(process.env.RELAY_COUNT || "10", 10);
 const BASE_PORT = parseInt(process.env.BASE_PORT || "3000", 10);
+const TUNNEL_LOG_DIR = process.env.TUNNEL_LOG_DIR || "/var/log/cloudflared";
 const HEADER_TARGET = "x-relay-target";
 const HEADER_PATH = "x-relay-path";
 const HEADER_HOST = "host";
@@ -157,3 +160,75 @@ function createRelayInstance(index) {
 for (let i = 1; i <= COUNT; i++) {
   createRelayInstance(i);
 }
+
+function getTunnelUrl(index) {
+  try {
+    const logPath = path.join(TUNNEL_LOG_DIR, `tunnel-${index}.log`);
+    if (!fs.existsSync(logPath)) return null;
+    const content = fs.readFileSync(logPath, "utf8");
+    const matches = content.match(/https:\/\/[a-zA-Z0-9.-]+\.trycloudflare\.com/g);
+    if (!matches || matches.length === 0) return null;
+    return matches[matches.length - 1];
+  } catch {
+    return null;
+  }
+}
+
+function createStatusServer() {
+  const statusPort = BASE_PORT;
+  const statusServer = http.createServer((req, res) => {
+    const tunnels = [];
+    for (let i = 1; i <= COUNT; i++) {
+      const url = getTunnelUrl(i);
+      tunnels.push({
+        index: i,
+        port: BASE_PORT + i,
+        tunnelUrl: url,
+        command: url ? `/freeflow add ${url} relay-${i}` : null,
+      });
+    }
+
+    const payload = {
+      status: "ok",
+      count: COUNT,
+      basePort: BASE_PORT,
+      tunnels,
+    };
+
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+    });
+    res.end(JSON.stringify(payload, null, 2));
+  });
+
+  statusServer.listen(statusPort, "0.0.0.0", () => {
+    console.log(`Status server listening on 0.0.0.0:${statusPort}`);
+  });
+
+  const knownUrls = new Map();
+  const pollTunnels = () => {
+    let updated = false;
+    for (let i = 1; i <= COUNT; i++) {
+      const url = getTunnelUrl(i);
+      if (url && url !== knownUrls.get(i)) {
+        knownUrls.set(i, url);
+        updated = true;
+        console.log(`[relay] Tunnel #${i} ready: ${url} -> /freeflow add ${url} relay-${i}`);
+      }
+    }
+    if (updated) {
+      console.log(`[relay] Active tunnels (${knownUrls.size}/${COUNT}):`);
+      for (const [idx, u] of knownUrls.entries()) {
+        console.log(`  - Relay #${idx}: ${u}`);
+      }
+    }
+  };
+
+  const timer = setInterval(pollTunnels, 3000);
+  if (timer.unref) timer.unref();
+  pollTunnels();
+}
+
+createStatusServer();
+

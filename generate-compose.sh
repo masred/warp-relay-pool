@@ -85,17 +85,18 @@ CONT_HI=$((BASE_PORT + COUNT))
 # only deliberate exposure needs WARP_BIND / INGRESS_BIND.
 SOCKS_BIND="${WARP_BIND:-127.0.0.1}"
 ROUTER_BIND="${INGRESS_BIND:-127.0.0.1}"
+STATUS_BIND="${INGRESS_BIND:-0.0.0.0}"
 # IPv6 binds would need Compose's bracketed port syntax ("[::]:port:port"),
 # which the templates below do not emit — reject rather than write a file
 # Docker cannot parse.
-case "$SOCKS_BIND$ROUTER_BIND" in
+case "$SOCKS_BIND$ROUTER_BIND$STATUS_BIND" in
   *:*)
     echo "error: WARP_BIND/INGRESS_BIND must be IPv4 or 0.0.0.0 (IPv6 binds are not supported); got WARP_BIND='$SOCKS_BIND' INGRESS_BIND='$ROUTER_BIND'" >&2
     exit 1
     ;;
 esac
 if [ "$WITH_TUNNELS" = true ]; then
-ROUTER_LINE="relay router not host-published; tunnels reach it in-network at http://10.244.0.100:300N"
+ROUTER_LINE="relay router status on ${STATUS_BIND}:${BASE_PORT}; tunnels reach relays in-network at http://10.244.0.100:300N"
 else
 ROUTER_LINE="relay router (mesh-VPN ingress) on ${ROUTER_BIND}:${HOST_LO}-${HOST_HI} (override bind: INGRESS_BIND)"
 fi
@@ -181,6 +182,10 @@ cat <<ENTRY
     networks:
       default:
         ipv4_address: 10.244.0.100
+    ports:
+      - "${STATUS_BIND}:${BASE_PORT}:${BASE_PORT}"
+    volumes:
+      - tunnel-logs:/var/log/cloudflared:ro
     depends_on:
 ENTRY
 else
@@ -222,20 +227,27 @@ cat <<ENTRY
     image: cloudflare/cloudflared:latest
     container_name: warp-relay-tunnel-${i}
     restart: always
-    command: tunnel --no-autoupdate --url http://10.244.0.100:${PORT}
+    command: tunnel --no-autoupdate --logfile /var/log/cloudflared/tunnel-${i}.log --url http://10.244.0.100:${PORT}
+    volumes:
+      - tunnel-logs:/var/log/cloudflared
 
 ENTRY
 i=$((i + 1))
 done
 fi
 
-if [ "$USE_LITE" = true ]; then
+if [ "$USE_LITE" = true ] || [ "$WITH_TUNNELS" = true ]; then
 echo "volumes:"
+if [ "$WITH_TUNNELS" = true ]; then
+echo "  tunnel-logs:"
+fi
+if [ "$USE_LITE" = true ]; then
 i=1
 while [ "$i" -le "$COUNT" ]; do
 echo "  warp-data-${i}:"
 i=$((i + 1))
 done
+fi
 fi
 } > docker-compose.yml
 
