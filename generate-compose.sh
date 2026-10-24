@@ -179,6 +179,7 @@ cat <<ENTRY
       - RELAY_COUNT=${COUNT}
       - BASE_PORT=${BASE_PORT:-3000}
       - RELAY_ALLOWED_TARGETS=${RELAY_ALLOWED_TARGETS:-https://opencode.ai,https://api.kilo.ai}
+      - RESET_TOKEN=\${RESET_TOKEN:-}
     networks:
       default:
         ipv4_address: 10.244.0.100
@@ -186,6 +187,7 @@ cat <<ENTRY
       - "${STATUS_BIND}:${BASE_PORT}:${BASE_PORT}"
     volumes:
       - tunnel-logs:/var/log/cloudflared:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
 ENTRY
 else

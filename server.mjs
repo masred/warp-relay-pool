@@ -16,6 +16,87 @@ const ALLOWED_TARGETS = (process.env.RELAY_ALLOWED_TARGETS ?? DEFAULT_ALLOWED_TA
   .split(",")
   .map((s) => s.trim().replace(/\/$/, ""))
   .filter(Boolean);
+const RESET_TOKEN = process.env.RESET_TOKEN || "bdc5eea4c71f5c995efa8d38e03c72067bc8702dbfe6f4cc7167ea459af6b7cd";
+let isResetInProgress = false;
+
+// Docker Engine API helper over unix domain socket
+function dockerRequest(method, path, body = null) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = body ? (typeof body === "string" ? body : JSON.stringify(body)) : null;
+    const req = http.request({
+      socketPath: "/var/run/docker.sock",
+      path,
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(bodyStr ? { "Content-Length": Buffer.byteLength(bodyStr) } : {})
+      }
+    }, (res) => {
+      let data = "";
+      res.on("data", chunk => data += chunk);
+      res.on("end", () => {
+        try {
+          const json = data ? JSON.parse(data) : {};
+          resolve({ status: res.statusCode, data: json, raw: data });
+        } catch {
+          resolve({ status: res.statusCode, data, raw: data });
+        }
+      });
+    });
+    req.on("error", reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+async function findWarpContainers() {
+  try {
+    const res = await dockerRequest("GET", "/containers/json?filters=" + encodeURIComponent(JSON.stringify({ name: ["warp-"] })));
+    if (res.status === 200 && Array.isArray(res.data)) {
+      return res.data;
+    }
+  } catch (err) {
+    console.error(`[reset] Failed to list containers via docker socket:`, err.message);
+  }
+  return [];
+}
+
+function getWarpContainerForIndex(containers, index) {
+  const re = new RegExp(`(^|/)warp-${index}(-[a-z0-9]+|$)`, "i");
+  const found = containers.find(c => c.Names && c.Names.some(n => re.test(n)));
+  return found || null;
+}
+
+async function execInContainer(containerId, cmd) {
+  try {
+    const createRes = await dockerRequest("POST", `/containers/${containerId}/exec`, {
+      Cmd: cmd,
+      AttachStdout: true,
+      AttachStderr: true
+    });
+    if (createRes.status === 201 && createRes.data?.Id) {
+      const execId = createRes.data.Id;
+      await dockerRequest("POST", `/exec/${execId}/start`, {
+        Detach: false,
+        Tty: false
+      });
+      return true;
+    }
+  } catch (err) {
+    console.error(`[reset] Exec failed on ${containerId}:`, err.message);
+  }
+  return false;
+}
+
+async function restartContainer(containerId) {
+  try {
+    const res = await dockerRequest("POST", `/containers/${containerId}/restart?t=10`);
+    return res.status === 204 || res.status === 200;
+  } catch (err) {
+    console.error(`[reset] Restart failed on ${containerId}:`, err.message);
+    return false;
+  }
+}
 
 // Log-and-continue on programming errors: one bad request must never take
 // down all 10 listeners in this process. Logging keeps the failure visible
@@ -46,6 +127,17 @@ async function probeEgress(index) {
   } catch (e) {
     // leave existing or null
   }
+}
+
+async function waitForNewEgress(index, maxSeconds = 15) {
+  egressIps.delete(index);
+  const deadline = Date.now() + maxSeconds * 1000;
+  while (Date.now() < deadline) {
+    await probeEgress(index);
+    if (egressIps.has(index)) return egressIps.get(index);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return egressIps.get(index) || null;
 }
 
 function createRelayInstance(index) {
@@ -209,6 +301,133 @@ function createStatusServer() {
       }
       res.writeHead(404, { "content-type": "text/plain" });
       return res.end(`No log for tunnel ${idx}`);
+    }
+
+    if (urlObj.pathname === "/reset" || urlObj.pathname === "/rotate" || urlObj.pathname === "/api/reset") {
+      const token = urlObj.searchParams.get("token") || req.headers["authorization"]?.replace(/^Bearer\s+/i, "");
+      if (!token || token !== RESET_TOKEN) {
+        res.writeHead(401, { "content-type": "application/json", "access-control-allow-origin": "*" });
+        return res.end(JSON.stringify({
+          status: "error",
+          code: 401,
+          error: "Unauthorized: invalid or missing 'token' parameter",
+          usage: "GET /reset?token=<YOUR_TOKEN>[&relay=all|1..10][&tier=1|2]"
+        }, null, 2));
+      }
+
+      if (isResetInProgress) {
+        res.writeHead(429, { "content-type": "application/json", "access-control-allow-origin": "*" });
+        return res.end(JSON.stringify({
+          status: "error",
+          code: 429,
+          error: "A reset operation is already in progress. Please wait a moment."
+        }, null, 2));
+      }
+
+      isResetInProgress = true;
+      const t0 = Date.now();
+      const targetRelay = (urlObj.searchParams.get("relay") || urlObj.searchParams.get("worker") || "all").toLowerCase();
+      const tier = parseInt(urlObj.searchParams.get("tier") || "2", 10);
+
+      const indices = [];
+      if (targetRelay === "all") {
+        for (let i = 1; i <= COUNT; i++) indices.push(i);
+      } else {
+        const idx = parseInt(targetRelay, 10);
+        if (!isNaN(idx) && idx >= 1 && idx <= COUNT) {
+          indices.push(idx);
+        } else {
+          isResetInProgress = false;
+          res.writeHead(400, { "content-type": "application/json", "access-control-allow-origin": "*" });
+          return res.end(JSON.stringify({
+            status: "error",
+            code: 400,
+            error: `Invalid relay index: '${targetRelay}'. Must be 'all' or between 1 and ${COUNT}.`
+          }, null, 2));
+        }
+      }
+
+      (async () => {
+        try {
+          const containers = await findWarpContainers();
+          if (!containers || containers.length === 0) {
+            throw new Error("No WARP containers found or /var/run/docker.sock not accessible.");
+          }
+
+          const results = [];
+          for (let i = 0; i < indices.length; i++) {
+            const idx = indices[i];
+            const oldIp = egressIps.get(idx) || null;
+            const container = getWarpContainerForIndex(containers, idx);
+
+            if (!container) {
+              results.push({
+                index: idx,
+                status: "failed",
+                error: `Container for warp-${idx} not found`,
+                oldEgressIp: oldIp,
+                newEgressIp: oldIp,
+                tunnelUrl: getTunnelUrl(idx)
+              });
+              continue;
+            }
+
+            console.log(`[reset] Resetting relay #${idx} (${container.Names[0]}, tier ${tier})...`);
+
+            if (tier >= 2) {
+              await execInContainer(container.Id, ["rm", "-f", "/etc/wireguard/wg0.conf"]);
+            }
+
+            await restartContainer(container.Id);
+
+            if (i < indices.length - 1) {
+              await new Promise(r => setTimeout(r, 1500));
+            }
+
+            results.push({
+              index: idx,
+              container: container.Names[0].replace(/^\//, ""),
+              oldEgressIp: oldIp,
+              tunnelUrl: getTunnelUrl(idx),
+              status: "rotated"
+            });
+          }
+
+          // Wait for each rotated container to settle and capture fresh egress IP
+          for (const item of results) {
+            if (item.status === "rotated") {
+              item.newEgressIp = await waitForNewEgress(item.index, 18);
+              item.status = item.newEgressIp ? "ok" : "slow_startup";
+            }
+          }
+
+          const payload = {
+            status: "ok",
+            action: "reset",
+            tier,
+            count: results.length,
+            elapsedMs: Date.now() - t0,
+            relays: results
+          };
+
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "access-control-allow-origin": "*"
+          });
+          res.end(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          console.error("[reset] Error during reset operation:", err);
+          res.writeHead(500, { "content-type": "application/json", "access-control-allow-origin": "*" });
+          res.end(JSON.stringify({
+            status: "error",
+            code: 500,
+            error: err.message || String(err)
+          }, null, 2));
+        } finally {
+          isResetInProgress = false;
+        }
+      })();
+      return;
     }
 
     const tunnels = [];
